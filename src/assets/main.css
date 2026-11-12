@@ -1,0 +1,36 @@
+@import './base.css';
+
+/* ── Section title accent bar ── */
+.section-title {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text, #1f2937);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  padding-left: 16px;
+}
+
+.section-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 24px;
+  background: var(--primary, #1a73e8);
+  border-radius: 2px;
+}
+
+/* ── Vant tabbar overrides ── */
+.van-tabbar {
+  box-shadow: 0 -2px 12px rgba(0,0,0,0.06) !important;
+  border-top: 1px solid #e5e7eb !important;
+}
+
+.van-tabbar-item--active {
+  color: var(--primary) !important;
+}
