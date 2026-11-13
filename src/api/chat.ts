@@ -23,10 +23,26 @@ export class ChatError extends Error {
   }
 }
 
+/** 模型开始调用一个工具 */
+export interface ToolStep {
+  tool: string
+  args: Record<string, unknown>
+}
+
+/** 工具执行结束 */
+export interface ToolStepResult {
+  tool: string
+  ok: boolean
+  error: string | null
+  summary: string
+}
+
 export interface StreamChatOptions {
   messages: ChatMessage[]
   signal?: AbortSignal
   onDelta?: (text: string) => void
+  onStep?: (step: ToolStep) => void
+  onStepDone?: (result: ToolStepResult) => void
 }
 
 export interface StreamChatResult {
@@ -42,6 +58,8 @@ export async function streamChat({
   messages,
   signal,
   onDelta,
+  onStep,
+  onStepDone,
 }: StreamChatOptions): Promise<StreamChatResult> {
   let response: Response
 
@@ -87,6 +105,18 @@ export async function streamChat({
       const payload = data as { text?: string } | string
       const text = typeof payload === 'string' ? payload : payload?.text
       if (text) onDelta?.(text)
+      return
+    }
+
+    if (event === 'step') {
+      const payload = data as ToolStep | string
+      if (typeof payload !== 'string') onStep?.(payload)
+      return
+    }
+
+    if (event === 'step_done') {
+      const payload = data as ToolStepResult | string
+      if (typeof payload !== 'string') onStepDone?.(payload)
       return
     }
 

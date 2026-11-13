@@ -43,7 +43,7 @@ export default defineConfig([
   // Node 侧：后端服务与构建配置
   {
     name: 'app/node-globals',
-    files: ['**/*.cjs', '**/*.config.js', 'scripts/**/*.{js,mjs}'],
+    files: ['**/*.cjs', '**/*.config.js', 'scripts/**/*.{js,mjs}', 'server/**/*.{js,mjs,cjs}'],
     languageOptions: {
       globals: {
         ...globals.node,

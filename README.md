@@ -12,7 +12,7 @@
 | 首页 `/` | 轮播 Banner、平台特色、热门目的地（卡片直达详情） |
 | 景点一览 `/Content` | **关键词搜索（防抖）+ 分类筛选 + 排序 + 只看收藏**，筛选条件同步到 URL，可分享 / 可刷新 / 可后退 |
 | 目的地详情 `/destination/:id` | 图集切换、价格与最佳季节、行程亮点与出行提示、收藏、一键让 AI 规划该线路、同分类推荐 |
-| AI 助手 `/AI` | **SSE 流式输出**（逐字渲染）、停止生成、多轮对话、快捷提问、错误提示；支持 `?prompt=` 预填行程需求 |
+| AI 助手 `/AI` | **SSE 流式输出**（逐字渲染）、**工具调用**（查真实的预算/天数/亮点并展示查询步骤）、停止生成、多轮对话、快捷提问、错误提示；支持 `?prompt=` 预填行程需求 |
 | 数据分析 `/Visualization` | ECharts 饼图 / 柱状图 / 词云，窗口自适应，实例随组件卸载回收 |
 | 收藏 | 模块级 store + localStorage 持久化，跨页面 / 跨标签页同步 |
 
@@ -55,11 +55,12 @@ npm test            # 单测（watch 模式）
 npm run test:run    # 单测（CI 模式）
 ```
 
-单测覆盖三处最值得测的纯逻辑（当前 **28 条**，全部跑在 node 环境）：
+单测覆盖四处最值得测的纯逻辑（当前 **45 条**，全部跑在 node 环境）：
 
 - `tests/sse.spec.ts`（10 条）：SSE 解析器的分帧、跨 chunk 截断、CRLF、多行 data、keep-alive 注释、末尾无空行
 - `tests/filter.spec.ts`（14 条）：关键词 / 分类 / 收藏过滤，三种排序，不修改入参
 - `tests/mapper.spec.ts`（4 条）：DTO → 视图模型的图片键名映射、未知键降级、本地数据无漏配图
+- `tests/tools.spec.ts`（17 条）：工具层的检索与排序、`limit` 钳制、预算折算，以及「错误以 `{ ok: false }` 回填而非抛异常」
 
 CI（`.github/workflows/ci.yml`）在每次 push / PR 依次执行 lint → type-check → test → build，
 构建产物以 artifact 形式保留。
@@ -75,6 +76,7 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 依次执行 lint → type
 | --- | --- |
 | `AI_API_KEY` | 大模型 API Key（**只放 `.env.local`，已被 `.gitignore` 忽略**） |
 | `AI_BASE_URL` / `AI_MODEL` | 上游服务地址与模型名，可换成任意 OpenAI 兼容服务 |
+| `AI_MAX_TOOL_ROUNDS` | 工具调用轮数：`1` 只查一次数据，`3`（默认）可连续多步，上限 5 |
 | `AI_TIMEOUT_MS` | 上游请求超时，默认 30s |
 | `PORT` | 后端端口，默认 3000 |
 | `CORS_ORIGINS` | 生产环境允许的前端域名，逗号分隔 |
@@ -126,27 +128,58 @@ CI（`.github/workflows/ci.yml`）在每次 push / PR 依次执行 lint → type
 
 ### 流式接口 `POST /api/ai/chat/stream`
 
-上游返回的是它自己的 SSE 格式，服务端做了一层**协议归一化**，前端只需认识三种事件：
+上游返回的是它自己的 SSE 格式，服务端做了一层**协议归一化**，前端只需认识这几种事件：
 
 ```
 event: delta
 data: {"text":"巴厘岛"}
 
+event: step
+data: {"tool":"search_destinations","args":{"maxPrice":5000}}
+
+event: step_done
+data: {"tool":"search_destinations","ok":true,"error":null,"summary":"找到 2 个目的地"}
+
 event: done
-data: {}
+data: {"steps":[{"tool":"search_destinations","ok":true}]}
 
 event: error
 data: {"message":"AI 服务繁忙，请稍后再试"}
 ```
 
+`step` / `step_done` 属于工具调用链路：模型先决定调哪个工具，服务端执行后把结果回填，
+再发起下一次请求拿最终答案。前端据此把「模型正在查什么」渲染成气泡里的步骤行。
+
 前端用 `fetch` + `ReadableStream` 读取（`EventSource` 只支持 GET，无法提交 JSON body），
 按行缓冲解析 SSE 帧，处理跨 chunk 截断与中文多字节边界；点「停止」时 `AbortController`
 会同时中断浏览器请求与服务端的上游请求，避免模型继续计算。实现见 `src/api/sse.ts` 与 `src/api/chat.ts`。
 
+### 工具调用（tool calling）
+
+模型并不知道本站收录了哪些目的地、报价多少，凭印象回答就会编造。所以给它三个只读工具：
+
+| 工具 | 作用 | 关键实现 |
+|---|---|---|
+| `search_destinations` | 按预算 / 天数 / 分类 / 关键词检索，价格升序 | 同时返回 `total` 与 `returned`，让模型知道结果是否被截断；`limit` 钳在 1–10 |
+| `get_destination_detail` | 取亮点、实用提示、最佳季节 | 不返回 `coverKey` / `galleryKeys` —— 模型用不上，只是白烧 token |
+| `estimate_budget` | 按人数 × 天数折算总花费 | 报价口径写进 `note`，避免模型把估算说成精确报价 |
+
+两个工程细节：
+
+- **碎片化参数合并**：stream 模式下 `tool_calls[].function.arguments` 是被切开的 JSON 片段
+  （`{"maxPrice":` / `5000}`），必须按 `index` 累积后再 `JSON.parse`，否则每次都拿到半个对象；
+- **错误回填而非中断**：工具执行失败时返回 `{ ok: false, error }`，作为 `role: "tool"` 的消息写回上下文，
+  模型可以据此改参数重试。这是「单轮查询」有潜力长成 agent 的前提 —— 直接返回 500 就断了这条链路。
+
+轮数由 `AI_MAX_TOOL_ROUNDS` 控制（默认 3）：前 N 轮提供工具，最后一轮用 `tool_choice: "none"`
+禁止再调用，强制模型基于已有结果作答。要调策略改这个环境变量就行，循环体不用动。
+
 ## 目录结构
 
 ```
-├─ server.cjs              # 后端：对话转发、校验、限流
+├─ server.cjs              # 后端：对话转发、校验、限流、工具调用循环
+├─ server/
+│  └─ tools.mjs            # 工具层：给模型查真实数据（纯函数 + 有单测）
 ├─ .env.example            # 环境变量模板
 ├─ index.html
 ├─ vite.config.js          # /api 开发代理
@@ -255,7 +288,8 @@ npm run images:webp -- --force --prune
 
 - **把静态数据改造成真接口**：前后端共用一份 `data/destinations.json`，接口只返回图片键名，前端用 `toDestination()` 做 DTO → 视图模型映射。前端侧用模块级共享状态 + 单飞（single-flight），首页/列表/详情只发一次请求，并实现骨架屏、错误重试、开发期降级三种状态（生产环境不降级、如实报错）。
 - **SSE 流式对话**：自己实现分帧解析器（按行缓冲、多行 `data:` 合并、兼容 `\r\n`），支持随时中断；中断时 `AbortController` 断前端连接，服务端 `res.on('close')` 同步取消上游请求，避免白烧 token。
-- **全量 TypeScript**：组件层全部 `lang="ts"`，筛选排序、SSE 分帧、DTO 映射抽成不依赖 DOM 的纯函数，**28 条单测**跑在 node 环境（不需要 jsdom）；CI 里 lint → type-check → test → build 四道闸。
+- **工具调用（function calling）**：模型不再凭印象报价格，而是通过 `search_destinations` / `get_destination_detail` / `estimate_budget` 三个只读工具查本站真实数据。stream 模式下按 `index` 合并碎片化的 `arguments`；工具失败时把 `{ ok: false, error }` 回填给模型，让它改参数重试而不是 500；轮数由 `AI_MAX_TOOL_ROUNDS` 控制，最后一轮用 `tool_choice: "none"` 强制作答，不会死循环。前端把调用过程渲染成气泡里的步骤行（`◌ 搜索目的地` → `✓ 找到 2 个目的地`）。
+- **全量 TypeScript**：组件层全部 `lang="ts"`，筛选排序、SSE 分帧、DTO 映射、工具层抽成不依赖 DOM 的纯函数，**45 条单测**跑在 node 环境（不需要 jsdom）；CI 里 lint → type-check → test → build 四道闸。
 - **可量化的性能优化**：图片经「缩放 → WebP → 按收益决策 → 去重」后从 15.2 MB 降到 2.84 MB（-81%）；图表路由 gzip 从 351 kB 降到 173 kB，单 chunk 从 1,056 kB 降到 336 kB 且构建无警告。
 - **状态与 URL 同步**：筛选、排序、关键词写进 query，链接可分享、返回不丢状态；收藏用 localStorage + 跨标签页 `storage` 事件同步。
 

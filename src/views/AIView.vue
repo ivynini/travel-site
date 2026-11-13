@@ -4,11 +4,28 @@ import { useRoute } from 'vue-router';
 import { ChatError, isAbortError, streamChat } from '@/api/chat';
 import type { ChatMessage } from '@/types';
 
-/** 对话气泡：在消息本体之外，还带两个只用于渲染的标记 */
+/** 一次工具调用的展示状态 */
+interface StepItem {
+  tool: string;
+  label: string;
+  status: 'running' | 'done' | 'error';
+  summary: string;
+}
+
+/** 对话气泡：在消息本体之外，还带几个只用于渲染的标记 */
 interface ChatEntry extends ChatMessage {
   isError?: boolean;
   streaming?: boolean;
+  /** 这条回复里调用过哪些工具（模型查真实数据的过程） */
+  steps?: StepItem[];
 }
+
+// 工具名 → 用户能看懂的说法
+const TOOL_LABELS: Record<string, string> = {
+  search_destinations: '搜索目的地',
+  get_destination_detail: '查看目的地详情',
+  estimate_budget: '估算花费',
+};
 
 const message = ref('');
 const chatLog = ref<ChatEntry[]>([]);
@@ -98,6 +115,29 @@ const sendMessage = async (text?: string) => {
       signal: abortController.signal,
       onDelta: (delta) => {
         current.content += delta;
+      },
+      // 模型开始调用工具：立刻插一行「搜索目的地…」，让等待过程可见
+      onStep: (step) => {
+        if (!current.steps) current.steps = [];
+        current.steps.push({
+          tool: step.tool,
+          label: TOOL_LABELS[step.tool] ?? step.tool,
+          status: 'running',
+          summary: ''
+        });
+      },
+      // 工具返回：把最近一个同名、仍在 running 的步骤更新成结果
+      onStepDone: (result) => {
+        const steps = current.steps;
+        if (!steps?.length) return;
+
+        for (let i = steps.length - 1; i >= 0; i -= 1) {
+          if (steps[i].tool === result.tool && steps[i].status === 'running') {
+            steps[i].status = result.ok ? 'done' : 'error';
+            steps[i].summary = result.summary || (result.ok ? '完成' : result.error ?? '失败');
+            break;
+          }
+        }
       }
     });
   } catch (error) {
@@ -174,10 +214,23 @@ const stop = () => abortController?.abort();
           </svg>
         </div>
         <div :class="['message-bubble', { 'is-error': msg.isError }]">
-          <span v-if="msg.streaming && !msg.content" class="typing-indicator" role="status" aria-label="正在生成">
+          <div v-if="msg.steps?.length" class="tool-steps" aria-label="查询过程">
+            <div
+              v-for="(step, stepIndex) in msg.steps"
+              :key="stepIndex"
+              :class="['tool-step', `is-${step.status}`]"
+            >
+              <span class="tool-step-icon" aria-hidden="true">
+                {{ step.status === 'running' ? '◌' : step.status === 'done' ? '✓' : '✕' }}
+              </span>
+              <span class="tool-step-label">{{ step.label }}</span>
+              <span v-if="step.summary" class="tool-step-summary">{{ step.summary }}</span>
+            </div>
+          </div>
+          <span v-if="msg.streaming && !msg.content && !msg.steps?.length" class="typing-indicator" role="status" aria-label="正在生成">
             <span></span><span></span><span></span>
           </span>
-          <template v-else><span class="message-text">{{ msg.content }}</span><span v-if="msg.streaming" class="caret" aria-hidden="true"></span></template>
+          <template v-else-if="msg.content"><span class="message-text">{{ msg.content }}</span><span v-if="msg.streaming" class="caret" aria-hidden="true"></span></template>
         </div>
         <div class="message-avatar" v-if="msg.role === 'user'">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -498,6 +551,73 @@ const stop = () => abortController?.abort();
   .ai-header {
     flex-direction: column;
     text-align: center;
+  }
+}
+/* ── 工具调用步骤：让「模型在查什么」对用户可见 ── */
+.tool-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px dashed #e5e7eb;
+}
+
+.tool-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.82rem;
+  color: #6b7280;
+  line-height: 1.4;
+}
+
+.tool-step-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #eef4ff;
+  color: #1a73e8;
+  font-size: 0.72rem;
+}
+
+.tool-step.is-running .tool-step-icon {
+  animation: tool-pulse 1.2s ease-in-out infinite;
+}
+
+.tool-step.is-done .tool-step-icon {
+  background: #e8f7ee;
+  color: #0daf5e;
+}
+
+.tool-step.is-error .tool-step-icon {
+  background: #fdecec;
+  color: #d64545;
+}
+
+.tool-step-summary {
+  color: #9ca3af;
+  font-size: 0.78rem;
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-step.is-running .tool-step-icon {
+    animation: none;
   }
 }
 </style>
