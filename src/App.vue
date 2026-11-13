@@ -1,13 +1,9 @@
-<script>
-import { RouterLink, RouterView } from 'vue-router'
-export default {
-  name: 'App',
-  data() {
-    return {
-      active: 0
-    }
-  }
-}
+<script setup lang="ts">
+import { ref } from 'vue'
+
+// RouterLink / RouterView / van-* 都是全局注册的，这里不需要 import。
+// van-tabbar 用 route 模式按当前路由高亮，active 只用于满足 v-model 的类型要求。
+const active = ref<number | string>(0)
 </script>
 
 <template>
@@ -64,44 +60,8 @@ export default {
 </template>
 
 <style scoped>
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-:root {
-  --primary: #1a73e8;
-  --primary-dark: #1557b0;
-  --primary-light: #e8f0fe;
-  --accent: #ff6b35;
-  --accent-light: #fff3ee;
-  --success: #0daf5e;
-  --warning: #ff9500;
-  --bg: #f0f3f8;
-  --bg-card: #ffffff;
-  --text: #1f2937;
-  --text-secondary: #6b7280;
-  --text-muted: #9ca3af;
-  --border: #e5e7eb;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow: 0 4px 6px rgba(0,0,0,0.05), 0 2px 4px rgba(0,0,0,0.03);
-  --shadow-lg: 0 10px 25px rgba(0,0,0,0.08), 0 4px 10px rgba(0,0,0,0.04);
-  --shadow-xl: 0 20px 50px rgba(0,0,0,0.12);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-lg: 16px;
-  --transition: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  padding-bottom: 60px;
-}
+/* 说明：全局的 CSS 变量、body 样式与 reset 都在 src/assets/base.css 中。
+   放在 scoped 里的 :root / body 选择器会被编译成 :root[data-v-xxx]，永远匹配不到，属于死代码。 */
 
 /* ── Header ── */
 header {

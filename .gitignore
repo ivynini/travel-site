@@ -33,3 +33,6 @@ coverage
 *.sw?
 
 *.tsbuildinfo
+
+# 构建时临时目录（把 TMP 指到项目里可以绕开部分 Windows 环境的临时文件权限问题）
+.tmp

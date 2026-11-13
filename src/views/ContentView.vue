@@ -1,96 +1,220 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import DestinationCard from '@/components/DestinationCard.vue'
+import { useFavorites } from '@/composables/useFavorites'
+import { useDestinations } from '@/composables/useDestinations'
+import {
+  ALL_CATEGORY,
+  SORT_OPTIONS,
+  filterDestinations,
+  isSortKey,
+} from '@/data/filter'
+// 分类是稳定的业务枚举，用它校验 URL 参数；具体数据走接口
+import { categories } from '@/data/destinations'
+
+const route = useRoute()
+const router = useRouter()
+const { ids, count } = useFavorites()
+const { items, loading, error, usedMock, load, reload } = useDestinations()
+
+onMounted(load)
+
+// 从 URL 初始化：刷新、分享链接、前进后退都能复现同一份筛选结果
+const initialSort = route.query.sort
+const keyword = ref(String(route.query.q ?? ''))
+const activeCategory = ref(
+  categories.includes(String(route.query.tag)) ? String(route.query.tag) : ALL_CATEGORY
+)
+// select 的 v-model 只能给出 string，类型收窄放在使用处（filterDestinations 会校验）
+const sortBy = ref<string>(isSortKey(initialSort) ? initialSort : 'default')
+const onlyFavorites = ref(route.query.fav === '1')
+
+// 输入框与筛选条件分开：输入做防抖，避免每敲一个字就写一次 URL
+const searchInput = ref(keyword.value)
+let debounceTimer: ReturnType<typeof setTimeout> | undefined
+
+const commitSearch = (value: string) => {
+  clearTimeout(debounceTimer)
+  keyword.value = value.trim()
+}
+
+watch(searchInput, (value) => {
+  clearTimeout(debounceTimer)
+  debounceTimer = setTimeout(() => commitSearch(value), 300)
+})
+
+onBeforeUnmount(() => clearTimeout(debounceTimer))
+
+const clearSearch = () => {
+  searchInput.value = ''
+  commitSearch('')
+}
+
+const resetAll = () => {
+  searchInput.value = ''
+  keyword.value = ''
+  activeCategory.value = ALL_CATEGORY
+  sortBy.value = 'default'
+  onlyFavorites.value = false
+}
+
+// 筛选状态 → URL（用 replace，避免每敲一个字都往历史栈里塞一条记录）
+watch(
+  [keyword, activeCategory, sortBy, onlyFavorites],
+  () => {
+    const query: Record<string, string> = {}
+    if (keyword.value) query.q = keyword.value
+    if (activeCategory.value !== ALL_CATEGORY) query.tag = activeCategory.value
+    if (sortBy.value !== 'default') query.sort = sortBy.value
+    if (onlyFavorites.value) query.fav = '1'
+    router.replace({ query })
+  },
+  { flush: 'post' }
+)
+
+// 浏览器前进/后退 → 反写回本地状态
+watch(
+  () => route.query,
+  (query) => {
+    const rawSort = query.sort
+    const q = String(query.q ?? '')
+    const tag = categories.includes(String(query.tag)) ? String(query.tag) : ALL_CATEGORY
+    const sort = isSortKey(rawSort) ? rawSort : 'default'
+    const fav = query.fav === '1'
+
+    if (q !== keyword.value) {
+      keyword.value = q
+      searchInput.value = q
+    }
+    if (tag !== activeCategory.value) activeCategory.value = tag
+    if (sort !== sortBy.value) sortBy.value = sort
+    if (fav !== onlyFavorites.value) onlyFavorites.value = fav
+  }
+)
+
+// 筛选与排序逻辑在 src/data/filter.ts 中，纯函数、有单测覆盖
+const filteredDestinations = computed(() => {
+  const sort = isSortKey(sortBy.value) ? sortBy.value : 'default'
+
+  return filterDestinations(items.value, {
+    keyword: keyword.value,
+    category: activeCategory.value,
+    sort,
+    onlyFavorites: onlyFavorites.value,
+    favorites: ids.value,
+  })
+})
+
+const hasActiveFilter = computed(
+  () =>
+    Boolean(keyword.value) ||
+    activeCategory.value !== ALL_CATEGORY ||
+    sortBy.value !== 'default' ||
+    onlyFavorites.value
+)
+</script>
+
 <template>
   <div>
     <div class="section">
       <div class="content-header">
         <div>
           <h2 class="section-title">精选旅行目的地</h2>
-          <p>探索我们精心挑选的全球旅行目的地，寻找您的下一个冒险之旅</p>
+          <p>按分类、关键词筛选，找到下一趟出发的理由</p>
         </div>
+        <span v-if="!loading" class="result-count">共 {{ filteredDestinations.length }} 个目的地</span>
       </div>
 
-      <div class="destination-grid">
-        <div class="destination-card" v-for="(item, index) in destinations" :key="index">
-          <div class="card-img-wrap">
-            <img :src="item.image" class="destination-image" :alt="item.name">
-            <div class="card-badge">{{ item.tag }}</div>
-          </div>
-          <div class="destination-info">
-            <div class="destination-location">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-              {{ item.location }}
-            </div>
-            <div class="destination-name">{{ item.name }}</div>
-            <div class="destination-desc">{{ item.description }}</div>
-            <div class="destination-footer">
-              <span class="destination-price">¥{{ item.price }}<small> 起</small></span>
-              <van-button type="primary" size="small" round>查看详情</van-button>
-            </div>
-          </div>
+      <div class="toolbar">
+        <div class="search-box">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <line x1="16.5" y1="16.5" x2="21" y2="21" stroke-linecap="round" />
+          </svg>
+          <input
+            v-model="searchInput"
+            type="search"
+            class="search-input"
+            placeholder="搜索目的地、国家或关键词，如「海岛」「京都」"
+            aria-label="搜索目的地"
+            @keyup.enter="commitSearch(searchInput)"
+          >
+          <button
+            v-if="searchInput"
+            type="button"
+            class="search-clear"
+            aria-label="清空搜索"
+            @click="clearSearch"
+          >
+            ×
+          </button>
         </div>
+
+        <select v-model="sortBy" class="sort-select" aria-label="排序方式">
+          <option v-for="option in SORT_OPTIONS" :key="option.value" :value="option.value">
+            {{ option.label }}
+          </option>
+        </select>
+      </div>
+
+      <div class="chips" role="group" aria-label="按分类筛选">
+        <button
+          v-for="category in categories"
+          :key="category"
+          type="button"
+          class="chip"
+          :class="{ 'is-active': activeCategory === category }"
+          :aria-pressed="activeCategory === category"
+          @click="activeCategory = category"
+        >
+          {{ category }}
+        </button>
+        <button
+          type="button"
+          class="chip chip-fav"
+          :class="{ 'is-active': onlyFavorites }"
+          :aria-pressed="onlyFavorites"
+          @click="onlyFavorites = !onlyFavorites"
+        >
+          ♥ 我的收藏（{{ count }}）
+        </button>
+      </div>
+
+      <p v-if="usedMock" class="state-hint">
+        后端未连接，当前展示本地示例数据（运行 npm run server 后自动切换为接口数据）
+      </p>
+
+      <div v-if="loading" class="skeleton-grid" aria-busy="true" aria-label="正在加载目的地">
+        <div v-for="n in 4" :key="n" class="skeleton-card"></div>
+      </div>
+
+      <div v-else-if="error" class="state-block">
+        <h3>目的地加载失败</h3>
+        <p>{{ error }}</p>
+        <button type="button" class="btn-primary" @click="reload">重新加载</button>
+      </div>
+
+      <div v-else-if="filteredDestinations.length" class="destination-grid">
+        <DestinationCard
+          v-for="item in filteredDestinations"
+          :key="item.id"
+          :item="item"
+        />
+      </div>
+
+      <div v-else class="empty-result">
+        <p class="empty-title">没有匹配的目的地</p>
+        <p class="empty-desc">
+          {{ onlyFavorites ? '还没有收藏任何目的地，先去逛逛吧。' : '换个关键词或分类试试。' }}
+        </p>
+        <button v-if="hasActiveFilter" type="button" class="btn-reset" @click="resetAll">
+          清空筛选条件
+        </button>
       </div>
     </div>
   </div>
 </template>
-
-<script>
-export default {
-  name: 'ContentView',
-  data() {
-    return {
-      destinations: [
-        {
-          name: '马尔代夫水上别墅',
-          location: '马尔代夫',
-          description: '入住奢华水上别墅，享受私人海滩和清澈海水，体验世界顶级潜水。',
-          price: '12,800',
-          tag: '奢华',
-          image: new URL('../assets/image/马尔代夫1.jpg', import.meta.url).href
-        },
-        {
-          name: '瑞士阿尔卑斯山',
-          location: '瑞士',
-          description: '探索壮丽的阿尔卑斯山脉，体验滑雪、徒步和世界级自然风光。',
-          price: '15,800',
-          tag: '热门',
-          image: new URL('../assets/image/阿尔卑斯山1.jpg', import.meta.url).href
-        },
-        {
-          name: '日本樱花季',
-          location: '日本',
-          description: '春季限定樱花之旅，漫步京都古寺，体验传统茶道和温泉文化。',
-          price: '11,500',
-          tag: '季节限定',
-          image: new URL('../assets/image/樱花1.jpg', import.meta.url).href
-        },
-        {
-          name: '希腊圣托里尼',
-          location: '希腊',
-          description: '蓝白相间的梦幻岛屿，欣赏爱琴海日落，品尝地道地中海美食。',
-          price: '9,800',
-          tag: '浪漫',
-          image: new URL('../assets/image/希腊1.jpg', import.meta.url).href
-        },
-        {
-          name: '肯尼亚野生动物',
-          location: '肯尼亚',
-          description: '在马赛马拉国家保护区体验惊险刺激的野生动物观赏之旅。',
-          price: '13,500',
-          tag: '探险',
-          image: new URL('../assets/image/肯尼亚1.jpg', import.meta.url).href
-        },
-        {
-          name: '新西兰南岛自驾',
-          location: '新西兰',
-          description: '沿着世界最美公路自驾，探索冰川、湖泊和奇幻的中土世界。',
-          price: '16,800',
-          tag: '自驾',
-          image: new URL('../assets/image/新西兰1.jpg', import.meta.url).href
-        }
-      ]
-    }
-  }
-}
-</script>
 
 <style scoped>
 .content-header {
@@ -99,15 +223,139 @@ export default {
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  margin-bottom: 4px;
+  margin-bottom: 18px;
 }
 
-/* ── Destination Grid ── */
+.result-count {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding-top: 6px;
+}
+
+/* ── Toolbar ── */
+.toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.search-box {
+  position: relative;
+  flex: 1;
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 42px;
+  border: 1.5px solid var(--border);
+  border-radius: 22px;
+  background: #fff;
+  color: var(--text-muted);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.search-box:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 4px rgba(26, 115, 232, 0.1);
+}
+
+.search-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: transparent;
+  min-width: 0;
+}
+
+.search-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* 用自定义的 × 清除按钮，隐藏浏览器自带的那个，避免出现两个 */
+.search-input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.search-clear {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.search-clear:hover {
+  color: var(--text);
+}
+
+.sort-select {
+  height: 42px;
+  padding: 0 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 22px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select:focus-visible {
+  border-color: var(--primary);
+}
+
+/* ── Chips ── */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.chip {
+  padding: 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #fff;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.chip.is-active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.chip-fav.is-active {
+  background: #e8458b;
+  border-color: #e8458b;
+}
+
+.chip:focus-visible {
+  outline: 2px solid var(--primary-dark);
+  outline-offset: 2px;
+}
+
+/* ── Grid ── */
 .destination-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 22px;
-  margin-top: 20px;
+  margin-top: 22px;
 }
 
 @media (max-width: 600px) {
@@ -122,98 +370,38 @@ export default {
   }
 }
 
-/* ── Card ── */
-.destination-card {
-  background: #fff;
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow);
-  border: 1px solid var(--border);
-  transition: all var(--transition);
+/* ── Empty state ── */
+.empty-result {
+  text-align: center;
+  padding: 56px 20px;
 }
 
-.destination-card:hover {
-  transform: translateY(-6px);
-  box-shadow: var(--shadow-xl);
-}
-
-.card-img-wrap {
-  position: relative;
-  overflow: hidden;
-}
-
-.destination-image {
-  width: 100%;
-  height: 210px;
-  object-fit: cover;
-  transition: transform 0.4s ease;
-}
-
-.destination-card:hover .destination-image {
-  transform: scale(1.06);
-}
-
-.card-badge {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  background: var(--accent);
-  color: #fff;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 0.75rem;
+.empty-title {
+  font-size: 1.05rem;
   font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-/* ── Card Info ── */
-.destination-info {
-  padding: 16px 18px;
-}
-
-.destination-location {
-  font-size: 0.82rem;
-  color: var(--primary);
-  font-weight: 500;
-  margin-bottom: 6px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.destination-name {
-  font-size: 1.15rem;
-  font-weight: 700;
   color: var(--text);
   margin-bottom: 6px;
 }
 
-.destination-desc {
+.empty-desc {
   font-size: 0.9rem;
   color: var(--text-secondary);
-  line-height: 1.55;
-  margin-bottom: 14px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  margin-bottom: 18px;
 }
 
-.destination-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.btn-reset {
+  padding: 9px 22px;
+  border: 1.5px solid var(--primary);
+  border-radius: 20px;
+  background: #fff;
+  color: var(--primary);
+  font-size: 0.86rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition);
 }
 
-.destination-price {
-  font-size: 1.15rem;
-  font-weight: 800;
-  color: #e53e3e;
-}
-
-.destination-price small {
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--text-muted);
+.btn-reset:hover {
+  background: var(--primary-light);
 }
 </style>

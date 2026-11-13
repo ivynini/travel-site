@@ -1,25 +1,38 @@
-<script setup>
-import { ref, nextTick, watch } from 'vue';
-import axios from 'axios';
+<script setup lang="ts">
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
+import { ChatError, isAbortError, streamChat } from '@/api/chat';
+import type { ChatMessage } from '@/types';
 
-// 开发环境留空走 Vite 代理（/api → http://localhost:3000）
-// 线上部署时用 VITE_API_BASE_URL 指向后端地址
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
-const REQUEST_TIMEOUT = 35000;
+/** 对话气泡：在消息本体之外，还带两个只用于渲染的标记 */
+interface ChatEntry extends ChatMessage {
+  isError?: boolean;
+  streaming?: boolean;
+}
 
 const message = ref('');
-const chatLog = ref([]);
-const isLoading = ref(false);
-const chatContainer = ref(null);
+const chatLog = ref<ChatEntry[]>([]);
+const isStreaming = ref(false);
+const chatContainer = ref<HTMLElement | null>(null);
+const inputRef = ref<HTMLInputElement | null>(null);
 
-const scrollToBottom = async () => {
-  await nextTick();
-  if (chatContainer.value) {
-    chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
-  }
-};
+// 用户往上翻看历史时，不要把他拽回底部
+const stickToBottom = ref(true);
 
-watch([() => chatLog.value.length, isLoading], scrollToBottom);
+const route = useRoute();
+let abortController: AbortController | null = null;
+
+// 从目的地详情页「让 AI 规划这条线路」跳过来时，把行程需求预填进输入框
+// 只预填、不自动发送：避免用户还没确认就消耗一次模型调用
+onMounted(() => {
+  const prompt = String(route.query.prompt ?? '').trim();
+  if (!prompt) return;
+  message.value = prompt;
+  inputRef.value?.focus();
+});
+
+// 离开页面时掐断流，避免后台还在收数据
+onBeforeUnmount(() => abortController?.abort());
 
 const quickQuestions = [
   '推荐几个热门旅游目的地',
@@ -28,43 +41,84 @@ const quickQuestions = [
   '日本自由行需要准备什么？'
 ];
 
-// 把不同失败原因翻译成用户能看懂的话
-const toErrorMessage = (error) => {
-  if (error.code === 'ECONNABORTED') return '请求超时了，请稍后重试。';
-  if (!error.response) return '网络连接失败，请检查后端服务是否已启动。';
-  if (error.response.status === 429) return '你问得有点快，休息一下再试试。';
-  return error.response.data?.error || '抱歉，我现在无法回答，请稍后再试。';
+const handleScroll = () => {
+  const el = chatContainer.value;
+  if (!el) return;
+  stickToBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
 };
 
-const sendMessage = async (text) => {
-  if (isLoading.value) return;
+const scrollToBottom = async () => {
+  if (!stickToBottom.value) return;
+  await nextTick();
+  const el = chatContainer.value;
+  if (el) el.scrollTop = el.scrollHeight;
+};
 
-  const msg = (text ?? message.value).trim();
-  if (!msg) return;
+// 监听条数变化 + 最后一条内容的变化：流式输出时长度不变、内容是持续增长的
+watch(
+  [() => chatLog.value.length, () => chatLog.value[chatLog.value.length - 1]?.content],
+  scrollToBottom
+);
 
-  chatLog.value.push({ role: 'user', content: msg });
+// 把不同失败原因翻译成用户能看懂的话
+const toErrorMessage = (error: unknown): string => {
+  if (isAbortError(error)) return '已停止生成。';
+  if (error instanceof ChatError) {
+    if (error.status === 429) return '你问得有点快，休息一下再试试。';
+    return error.message || '服务暂时不可用，请稍后再试。';
+  }
+  return '连不上后端服务，请先在另一个终端运行 npm run server。';
+};
+
+const sendMessage = async (text?: string) => {
+  if (isStreaming.value) return;
+
+  const content = (text ?? message.value).trim();
+  if (!content) return;
+
+  // 先取快照：错误提示气泡与占位气泡都不参与上下文
+  const history = chatLog.value
+    .filter((item) => !item.isError && !item.streaming)
+    .map(({ role, content: value }) => ({ role, content: value }));
+
+  chatLog.value.push({ role: 'user', content });
+  chatLog.value.push({ role: 'assistant', content: '', streaming: true });
+
+  // 拿到数组里的响应式代理对象，后续累加文本会触发更新
+  const current = chatLog.value[chatLog.value.length - 1];
+
   message.value = '';
-  isLoading.value = true;
+  isStreaming.value = true;
+  stickToBottom.value = true;
+  abortController = new AbortController();
 
   try {
-    const { data } = await axios.post(
-      `${API_BASE}/api/ai/chat`,
-      {
-        // 只提交角色和内容；错误提示气泡不参与上下文，服务端还会做校验与截断
-        messages: chatLog.value
-          .filter((item) => !item.isError)
-          .map(({ role, content }) => ({ role, content }))
-      },
-      { timeout: REQUEST_TIMEOUT }
-    );
-    chatLog.value.push({ role: 'assistant', content: data.reply });
+    await streamChat({
+      messages: [...history, { role: 'user', content }],
+      signal: abortController.signal,
+      onDelta: (delta) => {
+        current.content += delta;
+      }
+    });
   } catch (error) {
     console.error('AI 请求失败:', error);
-    chatLog.value.push({ role: 'assistant', content: toErrorMessage(error), isError: true });
+    if (isAbortError(error)) {
+      if (!current.content) current.content = '已停止生成。';
+    } else if (current.content) {
+      // 已经吐出一部分内容：保留它，只追加中断提示，别把用户看到的东西抹掉
+      current.content += '\n\n（生成中断，请重试）';
+    } else {
+      current.isError = true;
+      current.content = toErrorMessage(error);
+    }
   } finally {
-    isLoading.value = false;
+    current.streaming = false;
+    isStreaming.value = false;
+    abortController = null;
   }
 };
+
+const stop = () => abortController?.abort();
 </script>
 
 <template>
@@ -89,6 +143,7 @@ const sendMessage = async (text) => {
       role="log"
       aria-live="polite"
       aria-label="对话记录"
+      @scroll.passive="handleScroll"
     >
       <div v-if="chatLog.length === 0" class="chat-welcome">
         <div class="welcome-icon">
@@ -118,41 +173,47 @@ const sendMessage = async (text) => {
             <path d="M21 14c0 4.97-4.03 9-9 9a9 9 0 0 1-9-9v-3h18v3z"/>
           </svg>
         </div>
-        <div :class="['message-bubble', { 'is-error': msg.isError }]">{{ msg.content }}</div>
+        <div :class="['message-bubble', { 'is-error': msg.isError }]">
+          <span v-if="msg.streaming && !msg.content" class="typing-indicator" role="status" aria-label="正在生成">
+            <span></span><span></span><span></span>
+          </span>
+          <template v-else><span class="message-text">{{ msg.content }}</span><span v-if="msg.streaming" class="caret" aria-hidden="true"></span></template>
+        </div>
         <div class="message-avatar" v-if="msg.role === 'user'">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
           </svg>
         </div>
       </div>
-
-      <div v-if="isLoading" class="message bot-message">
-        <div class="message-avatar">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/>
-          </svg>
-        </div>
-        <div class="message-bubble typing-indicator">
-          <span></span><span></span><span></span>
-        </div>
-      </div>
     </div>
 
     <div class="input-area">
       <input
+        ref="inputRef"
         v-model="message"
         type="text"
         placeholder="输入您的旅行问题..."
         aria-label="旅行问题输入框"
-        :disabled="isLoading"
+        :disabled="isStreaming"
         @keyup.enter="sendMessage()"
         class="chat-input"
       />
       <button
+        v-if="isStreaming"
+        class="send-btn stop-btn"
+        aria-label="停止生成"
+        @click="stop"
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+      </button>
+      <button
+        v-else
         class="send-btn"
         aria-label="发送"
         @click="sendMessage()"
-        :disabled="isLoading || !message.trim()"
+        :disabled="!message.trim()"
       >
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
           <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
@@ -287,6 +348,11 @@ const sendMessage = async (text) => {
   word-break: break-word;
 }
 
+/* 模型回复里带换行，必须保留，否则会挤成一段 */
+.message-text {
+  white-space: pre-wrap;
+}
+
 .bot-message .message-bubble {
   background: #fff;
   color: var(--text);
@@ -314,10 +380,10 @@ const sendMessage = async (text) => {
 
 /* ── Typing Indicator ── */
 .typing-indicator {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 14px 18px !important;
+  height: 1em;
 }
 
 .typing-indicator span {
@@ -391,6 +457,33 @@ const sendMessage = async (text) => {
 .send-btn:disabled {
   background: #ccc;
   cursor: not-allowed;
+}
+
+/* ── 生成中 ── */
+.stop-btn {
+  background: #ef4444;
+}
+
+.stop-btn:hover {
+  background: #dc2626;
+  transform: scale(1.05);
+}
+
+/* 流式输出时的光标 */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--primary);
+  animation: caretBlink 1s steps(2, start) infinite;
+}
+
+@keyframes caretBlink {
+  to {
+    visibility: hidden;
+  }
 }
 
 @media (max-width: 768px) {

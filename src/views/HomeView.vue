@@ -23,10 +23,10 @@
             </van-swipe-item>
           </van-swipe>
 
-          <button class="carousel-btn prev-btn" @click="$refs.swipeRef.prev()">
+          <button class="carousel-btn prev-btn" @click="swipeRef?.prev()">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
           </button>
-          <button class="carousel-btn next-btn" @click="$refs.swipeRef.next()">
+          <button class="carousel-btn next-btn" @click="swipeRef?.next()">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
         </div>
@@ -52,102 +52,87 @@
     <div class="section">
       <h2 class="section-title">热门目的地</h2>
       <p>精选全球热门旅游城市，开启您的梦想之旅</p>
-      <div class="destination-grid">
-        <div class="destination-card" v-for="(item, index) in hotDestinations" :key="index">
-          <div class="card-img-wrap">
-            <img :src="item.image" class="destination-image" :alt="item.name">
-            <div class="card-badge">{{ item.tag }}</div>
-          </div>
-          <div class="destination-info">
-            <div class="destination-name">{{ item.name }}</div>
-            <div class="destination-desc">{{ item.desc }}</div>
-            <div class="destination-footer">
-              <span class="destination-price">¥{{ item.price }}<small> 起</small></span>
-              <button class="btn-sm">去看看</button>
-            </div>
-          </div>
-        </div>
+
+      <p v-if="usedMock" class="state-hint">后端未连接，当前展示本地示例数据</p>
+
+      <div v-if="loading" class="skeleton-grid" aria-busy="true" aria-label="正在加载热门目的地">
+        <div v-for="n in 3" :key="n" class="skeleton-card"></div>
+      </div>
+
+      <div v-else-if="error" class="state-block">
+        <h3>热门目的地加载失败</h3>
+        <p>{{ error }}</p>
+        <button type="button" class="btn-primary" @click="reload">重新加载</button>
+      </div>
+
+      <div v-else class="destination-grid">
+        <DestinationCard v-for="item in hotDestinations" :key="item.id" :item="item" />
+      </div>
+      <div class="section-more">
+        <RouterLink to="/Content" class="more-link">查看全部目的地 →</RouterLink>
       </div>
     </div>
   </div>
 </template>
 
-<script>
-export default {
-  name: 'HomeView',
-  data() {
-    return {
-      carouselImages: [
-        {
-          src: new URL('../assets/image/banner1.jpg', import.meta.url).href,
-          tag: '海岛度假', title: '马尔代夫', desc: '入住水上别墅，畅游碧蓝大海'
-        },
-        {
-          src: new URL('../assets/image/banner2.jpg', import.meta.url).href,
-          tag: '文化之旅', title: '日本京都', desc: '千年古都，感受传统与现代的交融'
-        },
-        {
-          src: new URL('../assets/image/banner3.jpg', import.meta.url).href,
-          tag: '浪漫之都', title: '法国巴黎', desc: '漫步塞纳河畔，品味法式优雅生活'
-        },
-        {
-          src: new URL('../assets/image/banner4.jpg', import.meta.url).href,
-          tag: '秘境探索', title: '川藏线', desc: '穿越横断山脉，感受高原壮美风景'
-        }
-      ],
-      features: [
-        { icon: '✈️', title: '全球覆盖', desc: '覆盖全球 100+ 国家精选目的地，深度游体验' },
-        { icon: '🧳', title: '行程定制', desc: '根据您的喜好和时间，量身定制专属旅行计划' },
-        { icon: '🏨', title: '精品住宿', desc: '精选高评分酒店与特色民宿，舒适每一晚' },
-        { icon: '💰', title: '最优价格', desc: '全网比价，保证您获得最具性价比的旅游产品' }
-      ],
-      hotDestinations: [
-        {
-          name: '巴厘岛浪漫之旅',
-          desc: '享受阳光沙滩，体验独特的巴厘岛文化，入住豪华海景别墅',
-          price: '4,580',
-          tag: '热门',
-          image: new URL('../assets/image/巴厘岛1.jpg', import.meta.url).href
-        },
-        {
-          name: '日本京都文化行',
-          desc: '探索千年古都，感受传统与现代融合，品尝地道日式料理',
-          price: '5,980',
-          tag: '新品',
-          image: new URL('../assets/image/京都1.jpg', import.meta.url).href
-        },
-        {
-          name: '马尔代夫度假天堂',
-          desc: '入住水上别墅，享受私人海滩，体验世界顶级潜水胜地',
-          price: '12,800',
-          tag: '热门',
-          image: new URL('../assets/image/马尔代夫1.jpg', import.meta.url).href
-        },
-        {
-          name: '巴黎艺术之旅',
-          desc: '漫步塞纳河畔，参观卢浮宫，感受浪漫之都的艺术气息',
-          price: '8,990',
-          tag: '推荐',
-          image: new URL('../assets/image/巴黎1.jpg', import.meta.url).href
-        },
-        {
-          name: '川藏秘境探索',
-          desc: '穿越横断山和青藏高原，感受藏民族的独特文化魅力',
-          price: '8,000',
-          tag: '探险',
-          image: new URL('../assets/image/西藏1.jpg', import.meta.url).href
-        },
-        {
-          name: '云南古城奇遇',
-          desc: '骑行洱海畔感受风花雪月，漫步大理古城邂逅浪漫与自由',
-          price: '3,000',
-          tag: '推荐',
-          image: new URL('../assets/image/云南1.jpg', import.meta.url).href
-        }
-      ]
-    };
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import DestinationCard from '@/components/DestinationCard.vue'
+import { useDestinations } from '@/composables/useDestinations'
+import { resolveImage } from '@/data/images'
+
+// 只声明用得到的两个方法，避免为了一个 ref 去依赖 Vant 的实例类型
+interface SwipeApi {
+  prev: () => void
+  next: () => void
+}
+
+interface CarouselItem {
+  src: string
+  tag: string
+  title: string
+  desc: string
+}
+
+interface FeatureItem {
+  icon: string
+  title: string
+  desc: string
+}
+
+const swipeRef = ref<SwipeApi | null>(null)
+
+// 热门目的地来自接口（开发环境后端未启动时自动降级为本地数据）
+const { items, loading, error, usedMock, load, reload } = useDestinations()
+const hotDestinations = computed(() => items.value.filter((item) => item.hot))
+
+onMounted(load)
+
+const carouselImages: CarouselItem[] = [
+  {
+    src: resolveImage('banner1'),
+    tag: '海岛度假', title: '马尔代夫', desc: '入住水上别墅，畅游碧蓝大海'
+  },
+  {
+    src: resolveImage('banner2'),
+    tag: '文化之旅', title: '日本京都', desc: '千年古都，感受传统与现代的交融'
+  },
+  {
+    src: resolveImage('banner3'),
+    tag: '浪漫之都', title: '法国巴黎', desc: '漫步塞纳河畔，品味法式优雅生活'
+  },
+  {
+    src: resolveImage('banner4'),
+    tag: '秘境探索', title: '川藏线', desc: '穿越横断山脉，感受高原壮美风景'
   }
-};
+]
+
+const features: FeatureItem[] = [
+  { icon: '✈️', title: '全球覆盖', desc: '覆盖全球 100+ 国家精选目的地，深度游体验' },
+  { icon: '🧳', title: '行程定制', desc: '根据您的喜好和时间，量身定制专属旅行计划' },
+  { icon: '🏨', title: '精品住宿', desc: '精选高评分酒店与特色民宿，舒适每一晚' },
+  { icon: '💰', title: '最优价格', desc: '全网比价，保证您获得最具性价比的旅游产品' }
+]
 </script>
 
 <style scoped>
@@ -320,104 +305,26 @@ export default {
   margin-top: 16px;
 }
 
-.destination-card {
-  background: #fff;
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow);
-  border: 1px solid var(--border);
+.section-more {
+  margin-top: 22px;
+  text-align: center;
+}
+
+.more-link {
+  display: inline-block;
+  padding: 9px 22px;
+  border: 1.5px solid var(--primary);
+  border-radius: 22px;
+  color: var(--primary);
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-decoration: none;
   transition: all var(--transition);
 }
 
-.destination-card:hover {
-  transform: translateY(-6px);
-  box-shadow: var(--shadow-xl);
-}
-
-.card-img-wrap {
-  position: relative;
-  overflow: hidden;
-}
-
-.destination-image {
-  width: 100%;
-  height: 200px;
-  object-fit: cover;
-  transition: transform 0.4s ease;
-}
-
-.destination-card:hover .destination-image {
-  transform: scale(1.06);
-}
-
-.card-badge {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  background: var(--accent);
-  color: #fff;
-  padding: 4px 12px;
-  border-radius: 20px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.destination-info {
-  padding: 16px 18px;
-}
-
-.destination-name {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: var(--text);
-  margin-bottom: 6px;
-}
-
-.destination-desc {
-  color: var(--text-secondary);
-  font-size: 0.88rem;
-  line-height: 1.5;
-  margin-bottom: 14px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.destination-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.destination-price {
-  font-size: 1.2rem;
-  font-weight: 800;
-  color: #e53e3e;
-}
-
-.destination-price small {
-  font-size: 0.78rem;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-.btn-sm {
-  padding: 7px 18px;
-  border: none;
-  border-radius: 20px;
+.more-link:hover {
   background: var(--primary);
   color: #fff;
-  font-size: 0.82rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all var(--transition);
-}
-
-.btn-sm:hover {
-  background: var(--primary-dark);
-  box-shadow: 0 4px 12px rgba(26, 115, 232, 0.3);
 }
 
 /* ── Responsive ── */

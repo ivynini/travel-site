@@ -41,6 +41,8 @@ body {
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 给底部固定 TabBar 留出空间，避免最后一段内容被遮住 */
+  padding-bottom: 68px;
 }
 
 /* ── Shared Section Styles ── */
@@ -124,6 +126,69 @@ body {
 .card:hover {
   transform: translateY(-4px);
   box-shadow: var(--shadow-xl);
+}
+
+/* ── 异步状态：骨架屏 / 错误块 / 降级提示 ── */
+.skeleton-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+
+.skeleton-card {
+  height: 300px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: linear-gradient(100deg, #f3f4f6 30%, #e7eaef 50%, #f3f4f6 70%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 150% 0;
+  }
+
+  to {
+    background-position: -50% 0;
+  }
+}
+
+.state-block {
+  padding: 40px 20px;
+  text-align: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+}
+
+.state-block h3 {
+  font-size: 1.05rem;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.state-block p {
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+}
+
+.state-hint {
+  display: inline-block;
+  margin-bottom: 16px;
+  padding: 8px 14px;
+  border-radius: 20px;
+  background: #fff7e6;
+  border: 1px solid #ffe0a3;
+  color: #8a5a00;
+  font-size: 0.85rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-card {
+    animation: none;
+  }
 }
 
 /* ── Scrollbar ── */

@@ -9,6 +9,7 @@ const express = require('express')
 const cors = require('cors')
 const axios = require('axios')
 const dotenv = require('dotenv')
+const { TextDecoder } = require('node:util')
 
 // .env.local 优先于 .env，便于本机覆盖而不改动默认配置
 dotenv.config({ path: ['.env.local', '.env'] })
@@ -111,6 +112,15 @@ function normalizeMessages(raw) {
   return cleaned.slice(-MAX_HISTORY)
 }
 
+/* ── 目的地数据：前端本地兜底与这里读的是同一份 JSON ── */
+const DESTINATIONS = require('./data/destinations.json')
+
+app.get('/api/destinations', (req, res) => {
+  // 数据量小、几乎不变，给一个短缓存，省掉重复请求
+  res.setHeader('Cache-Control', 'public, max-age=60')
+  res.json({ items: DESTINATIONS, total: DESTINATIONS.length })
+})
+
 app.get('/api/health', (req, res) => {
   res.json({ ok: true, model: AI_MODEL, upstream: AI_BASE_URL })
 })
@@ -158,6 +168,134 @@ app.post('/api/ai/chat', rateLimiter, async (req, res) => {
       return res.status(504).json({ error: 'AI 服务响应超时，请重试' })
     }
     res.status(500).json({ error: 'AI 服务暂时不可用，请稍后再试' })
+  }
+})
+
+/**
+ * 流式对话（SSE）
+ *
+ * 上游（OpenAI 兼容协议）返回的是它自己的 SSE 格式，这里做一层「协议归一化」，
+ * 前端只需要认识三种事件，不必了解上游字段结构：
+ *   event: delta  data: {"text":"..."}    增量文本
+ *   event: done   data: {}                正常结束
+ *   event: error  data: {"message":"..."} 出错（此时 HTTP 状态已是 200）
+ */
+app.post('/api/ai/chat/stream', rateLimiter, async (req, res) => {
+  const messages = normalizeMessages(req.body?.messages)
+  if (!messages) {
+    return res.status(400).json({ error: '请求格式不正确：messages 必须是非空数组且以用户消息结尾' })
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no') // 关掉 nginx 等反向代理的缓冲，否则会攒够一批才吐
+  res.flushHeaders?.()
+
+  let finished = false
+
+  const write = (event, data) => {
+    if (finished || res.writableEnded) return
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+
+  const finish = (payload = {}) => {
+    if (finished) return
+    write('done', payload)
+    finished = true
+    res.end()
+  }
+
+  const fail = (message) => {
+    if (finished) return
+    write('error', { message })
+    finished = true
+    res.end()
+  }
+
+  // 前端点「停止」/ 关页面时，立刻掐断上游请求，别让模型继续算下去白花钱。
+  // 注意用 res 的 close：正常结束时 finished 已经是 true，这里只处理提前断开的情况。
+  const controller = new AbortController()
+  let clientGone = false
+  res.on('close', () => {
+    if (finished) return
+    clientGone = true
+    controller.abort()
+  })
+
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+
+  // 按行解析上游 SSE 帧：一个 chunk 可能截断在多字节字符或换行中间，必须自己缓冲
+  const handleLine = (line) => {
+    if (!line.startsWith('data:')) return
+    const payload = line.slice(5).trim()
+    if (!payload) return
+    if (payload === '[DONE]') {
+      finish()
+      return
+    }
+    try {
+      const json = JSON.parse(payload)
+      const delta = json.choices?.[0]?.delta?.content
+      if (delta) write('delta', { text: delta })
+    } catch {
+      // 不完整帧直接跳过，不影响后续内容
+    }
+  }
+
+  try {
+    const upstream = await axios.post(
+      `${AI_BASE_URL}/chat/completions`,
+      {
+        model: AI_MODEL,
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+        temperature: 0.7,
+        max_tokens: 512,
+        stream: true,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${AI_API_KEY}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+        },
+        responseType: 'stream',
+        timeout: AI_TIMEOUT_MS,
+        signal: controller.signal,
+      }
+    )
+
+    upstream.data.on('data', (chunk) => {
+      buffer += decoder.decode(chunk, { stream: true })
+      let index
+      while ((index = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, index).replace(/\r$/, '')
+        buffer = buffer.slice(index + 1)
+        handleLine(line)
+      }
+    })
+
+    upstream.data.on('end', () => {
+      if (buffer) handleLine(buffer.replace(/\r$/, ''))
+      finish()
+    })
+
+    upstream.data.on('error', (error) => {
+      if (clientGone) return
+      console.error('[AI stream] 读取上游数据失败:', error.message)
+      fail('AI 服务连接中断，请重试')
+    })
+  } catch (error) {
+    if (clientGone || error.code === 'ERR_CANCELED') return
+
+    const status = error.response?.status
+    console.error('[AI stream] 上游请求失败:', status || error.code, error.message)
+
+    if (status === 401 || status === 403) return fail('AI 服务鉴权失败，请检查服务端 API Key 配置')
+    if (status === 429) return fail('AI 服务繁忙，请稍后再试')
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') return fail('AI 服务响应超时，请重试')
+    fail('AI 服务暂时不可用，请稍后再试')
   }
 })
 
